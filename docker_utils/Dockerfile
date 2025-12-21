@@ -4,6 +4,7 @@ COPY . /opt/taxii
 WORKDIR /opt/taxii
 RUN pip install --upgrade pip setuptools \
     && pip install pymongo \
+    && pip install psycopg2-binary SQLAlchemy \
     && pip install .
 
 # Set up the default configuration files

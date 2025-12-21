@@ -84,6 +84,26 @@ configuration snippet for this approach looks like:
         }
     }
 
+PostgreSQL Backend
+~~~~~~~~~~~~~~~~~~
+
+To use the PostgreSQL backend, you need to set the following environment
+variables:
+
+- ``MEDALLION_BACKEND_MODULE_CLASS``: Set to ``PostgresBackend``.
+- ``MEDALLION_BACKEND_POSTGRES_URI``: The connection URI for your PostgreSQL
+  database.
+
+The connection URI should follow the format:
+``postgresql://user:password@host:port/database``
+
+Here's an example configuration using environment variables:
+
+.. code-block:: bash
+
+    export MEDALLION_BACKEND_MODULE_CLASS="PostgresBackend"
+    export MEDALLION_BACKEND_POSTGRES_URI="postgresql://user:password@postgres:5432/medallion"
+
 Another way to provide a custom backend using flask proxy could be:
 
 .. code-block:: python
