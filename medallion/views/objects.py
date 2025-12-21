@@ -71,20 +71,6 @@ def validate_version_parameter_in_content_type_header():
         raise ProcessingError("Media type in the Content-Type header is invalid or not found", 415)
 
 
-def validate_limit_parameter():
-    max_page = current_app.taxii_config["max_page_size"]
-    limit = request.args.get("limit", max_page)
-    try:
-        limit = int(limit)
-    except ValueError:
-        raise ProcessingError("The server did not understand the request or filter parameters", 400)
-    if limit <= 0:
-        raise ProcessingError("The limit parameter cannot be negative or zero", 400)
-    if limit > max_page:
-        limit = max_page
-    return limit
-
-
 @objects_bp.route("/<string:api_root>/collections/<string:collection_id>/objects/", methods=["GET", "POST"])
 @auth.login_required
 def get_or_add_objects(api_root, collection_id):
@@ -111,9 +97,8 @@ def get_or_add_objects(api_root, collection_id):
 
     if request.method == "GET":
         permission_to_read(api_root, collection_id)
-        limit = validate_limit_parameter()
         objects, headers = current_app.medallion_backend.get_objects(
-            api_root, collection_id, request.args.to_dict(), ("id", "type", "version", "spec_version"), limit
+            api_root, collection_id, request.args.to_dict(), ("id", "type", "version", "spec_version")
         )
 
         return Response(
@@ -163,11 +148,10 @@ def get_or_delete_object(api_root, collection_id, object_id):
 
     if request.method == "GET":
         permission_to_read(api_root, collection_id)
-        limit = validate_limit_parameter()
         objects, headers = current_app.medallion_backend.get_object(
-            api_root, collection_id, object_id, request.args.to_dict(), ("version", "spec_version"), limit
+            api_root, collection_id, object_id, request.args.to_dict(), ("version", "spec_version")
         )
-        if objects or request.args:
+        if objects["objects"] or request.args:
             return Response(
                 response=json.dumps(objects),
                 status=200,
@@ -210,9 +194,8 @@ def get_object_versions(api_root, collection_id, object_id):
     collection_exists(api_root, collection_id)
     permission_to_read(api_root, collection_id)
 
-    limit = validate_limit_parameter()
     versions, headers = current_app.medallion_backend.get_object_versions(
-        api_root, collection_id, object_id, request.args.to_dict(), ("spec_version",), limit
+        api_root, collection_id, object_id, request.args.to_dict(), ("spec_version",)
     )
     return Response(
         response=json.dumps(versions),
