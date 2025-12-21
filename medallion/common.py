@@ -23,6 +23,12 @@ def create_resource(resource_name, items, more=False, next_id=None):
     return resource
 
 
+def remove_hidden_field(objs):
+    for obj in objs:
+        if "_date_added" in obj:
+            del obj["_date_added"]
+
+
 def determine_version(new_obj, request_time):
     """Grab the modified time if present, if not grab created time,
     if not grab request time provided by server."""
