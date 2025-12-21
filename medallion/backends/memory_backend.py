@@ -243,7 +243,7 @@ class MemoryBackend(Backend):
                 collection.pop("objects", None)
                 return collection
 
-    def get_object_manifest(self, api_root, collection_id, filter_args, allowed_filters, limit):
+    def get_object_manifest(self, api_root, collection_id, filter_args, allowed_filters):
         more = False
         n = None
         if api_root in self.data:
@@ -252,23 +252,25 @@ class MemoryBackend(Backend):
 
             for collection in collections:
                 if collection_id == collection["id"]:
-                    if "next" in filter_args:
-                        manifest = collection.get("manifest", [])
-                        manifest, more, headers, n = self.get_next(filter_args, allowed_filters, manifest, limit)
-                    else:
-                        manifest = collection.get("manifest", [])
-                        full_filter = BasicFilter(filter_args)
-                        manifest, next_save, headers = full_filter.process_filter(
-                            manifest,
-                            allowed_filters,
-                            None,
-                            limit
-                        )
-                        if len(next_save) != 0:
-                            more = True
-                            n = self.set_next(next_save, filter_args)
-                        break
-            return create_resource("objects", manifest, more, n), headers
+                    manifest = collection.get("manifest", [])
+                    if "added_after" in filter_args:
+                        ts = string_to_datetime(filter_args["added_after"])
+                        manifest = [x for x in manifest if string_to_datetime(x["date_added"]) > ts]
+                    # if "next" in filter_args:
+                        # manifest, more, headers, n = self.get_next(filter_args, allowed_filters, manifest, limit)
+                    # else:
+                    full_filter = BasicFilter(filter_args)
+                    manifest, next_save, headers = full_filter.process_filter(
+                        manifest,
+                        allowed_filters,
+                        None,
+                        filter_args.get("limit")
+                    )
+                    if len(next_save) != 0:
+                        more = True
+                        n = self.set_next(next_save, filter_args)
+                    break
+            return create_resource("manifest", manifest, more, n), headers
 
     def get_api_root_information(self, api_root):
         if api_root in self.data:
@@ -291,7 +293,7 @@ class MemoryBackend(Backend):
                 if status_id == status["id"]:
                     return status
 
-    def get_objects(self, api_root, collection_id, filter_args, allowed_filters, limit):
+    def get_objects(self, api_root, collection_id, filter_args, allowed_filters):
         more = False
         n = None
         if api_root in self.data:
@@ -301,29 +303,39 @@ class MemoryBackend(Backend):
             for collection in collections:
                 if collection_id == collection["id"]:
                     manifest = collection.get("manifest", [])
-                    if "next" in filter_args:
-                        objs, more, headers, n = self.get_next(filter_args, allowed_filters, manifest, limit)
+                    # if "next" in filter_args:
+                    #    objs, more, headers, n = self.get_next(filter_args, allowed_filters, manifest, limit)
+                    # else:
+                    if "added_after" in filter_args:
+                        ts = string_to_datetime(filter_args["added_after"])
+                        manifest_keep = [x for x in manifest if string_to_datetime(x["date_added"]) > ts]
+                        objs_keep = []
+                        for obj in collection.get("objects", []):
+                            for man in manifest_keep:
+                                if obj["id"] == man["id"] and determine_version(obj, "not_needed") == man["version"]:
+                                    objs_keep.append(obj)
+                        objs = copy.deepcopy(objs_keep)
                     else:
                         objs = copy.deepcopy(collection.get("objects", []))
-                        full_filter = BasicFilter(filter_args)
-                        objs, next_save, headers = full_filter.process_filter(
-                            objs,
-                            allowed_filters,
-                            manifest,
-                            limit
-                        )
+                    full_filter = BasicFilter(filter_args)
+                    objs, next_save, headers = full_filter.process_filter(
+                        objs,
+                        allowed_filters,
+                        manifest,
+                        filter_args.get("limit")
+                    )
 
-                        if len(next_save) != 0:
-                            more = True
-                            n = self.set_next(next_save, filter_args)
-                        break
+                    if len(next_save) != 0:
+                        more = True
+                        n = self.set_next(next_save, filter_args)
+                    break
             remove_hidden_field(objs)
-            return create_resource("objects", objs, more, n), headers
+            return create_resource("envelope", objs, more, n), headers
 
     def _add_status(self, api_root_name, status):
         self._get_api_root_statuses(api_root_name).append(status)
 
-    def add_objects(self, api_root, collection_id, objs, request_time):
+    def add_objects(self, api_root, collection_id, envelope, request_time):
         if api_root in self.data:
             api_info = self._get(api_root)
             collections = api_info.get("collections", [])
@@ -338,7 +350,7 @@ class MemoryBackend(Backend):
                     if "objects" not in collection:
                         collection["objects"] = []
                     try:
-                        for new_obj in objs["objects"]:
+                        for new_obj in envelope["objects"]:
                             version = determine_version(new_obj, request_time)
                             id_and_version_already_present = False
                             for obj in collection["objects"]:
@@ -382,7 +394,7 @@ class MemoryBackend(Backend):
             api_info["status"].append(status)
             return status
 
-    def get_object(self, api_root, collection_id, object_id, filter_args, allowed_filters, limit):
+    def get_object(self, api_root, collection_id, object_id, filter_args, allowed_filters):
         more = False
         n = None
         if api_root in self.data:
@@ -393,27 +405,27 @@ class MemoryBackend(Backend):
             for collection in collections:
                 if collection_id == collection["id"]:
                     manifests = collection.get("manifest", [])
-                    if "next" in filter_args:
-                        objs, more, headers, n = self.get_next(filter_args, allowed_filters, manifests, limit)
-                    else:
-                        for obj in collection.get("objects", []):
-                            if object_id == obj["id"]:
-                                objs.append(copy.deepcopy(obj))
-                        if len(objs) == 0:
-                            raise ProcessingError("Object '{}' not found".format(object_id), 404)
-                        full_filter = BasicFilter(filter_args)
-                        objs, next_save, headers = full_filter.process_filter(
-                            objs,
-                            allowed_filters,
-                            manifests,
-                            limit
-                        )
-                        if len(next_save) != 0:
-                            more = True
-                            n = self.set_next(next_save, filter_args)
-                        break
+                    # if "next" in filter_args:
+                    #    objs, more, headers, n = self.get_next(filter_args, allowed_filters, manifests, limit)
+                    # else:
+                    for obj in collection.get("objects", []):
+                        if object_id == obj["id"]:
+                            objs.append(copy.deepcopy(obj))
+                    if len(objs) == 0:
+                        raise ProcessingError("Object '{}' not found".format(object_id), 404)
+                    full_filter = BasicFilter(filter_args)
+                    objs, next_save, headers = full_filter.process_filter(
+                        objs,
+                        allowed_filters,
+                        manifests,
+                        filter_args.get("limit")
+                    )
+                    if len(next_save) != 0:
+                        more = True
+                        n = self.set_next(next_save, filter_args)
+                    break
             remove_hidden_field(objs)
-            return create_resource("objects", objs, more, n), headers
+            return create_resource("envelope", objs, more, n), headers
 
     def delete_object(self, api_root, collection_id, obj_id, filter_args, allowed_filters):
         if api_root in self.data:
@@ -450,7 +462,7 @@ class MemoryBackend(Backend):
                             manifests.remove(man)
                             break
 
-    def get_object_versions(self, api_root, collection_id, object_id, filter_args, allowed_filters, limit):
+    def get_object_versions(self, api_root, collection_id, object_id, filter_args, allowed_filters):
         more = False
         n = None
         if api_root in self.data:
@@ -461,27 +473,25 @@ class MemoryBackend(Backend):
             for collection in collections:
                 if collection_id == collection["id"]:
                     all_manifests = collection.get("manifest", [])
-                    if "next" in filter_args:
-                        objs, more, headers, n = self.get_next(filter_args, allowed_filters, all_manifests, limit)
-                        objs = sorted(map(lambda x: x["version"], objs), reverse=True)
-                    else:
-
-                        all_manifests = collection.get("manifest", [])
-                        for manifest in all_manifests:
-                            if object_id == manifest["id"]:
-                                objs.append(manifest)
-                        if len(objs) == 0:
-                            raise ProcessingError("Object '{}' not found".format(object_id), 404)
-                        full_filter = BasicFilter(filter_args)
-                        objs, next_save, headers = full_filter.process_filter(
-                            objs,
-                            allowed_filters,
-                            None,
-                            limit
-                        )
-                        if len(next_save) != 0:
-                            more = True
-                            n = self.set_next(next_save, filter_args)
-                        objs = sorted(map(lambda x: x["version"], objs), reverse=True)
-                        break
+                    # if "next" in filter_args:
+                    #    objs, more, headers, n = self.get_next(filter_args, allowed_filters, all_manifests, limit)
+                    #    objs = sorted(map(lambda x: x["version"], objs), reverse=True)
+                    # else:
+                    for manifest in all_manifests:
+                        if object_id == manifest["id"]:
+                            objs.append(manifest)
+                    if len(objs) == 0:
+                        raise ProcessingError("Object '{}' not found".format(object_id), 404)
+                    full_filter = BasicFilter(filter_args)
+                    objs, next_save, headers = full_filter.process_filter(
+                        objs,
+                        allowed_filters,
+                        None,
+                        filter_args.get("limit")
+                    )
+                    if len(next_save) != 0:
+                        more = True
+                        n = self.set_next(next_save, filter_args)
+                    objs = sorted(map(lambda x: x["version"], objs), reverse=True)
+                    break
             return create_resource("versions", objs, more, n), headers
