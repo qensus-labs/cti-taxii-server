@@ -1,4 +1,6 @@
 import copy
+from datetime import timedelta
+import json
 import uuid
 
 import environ
@@ -10,7 +12,7 @@ from ..common import (
     APPLICATION_INSTANCE, create_resource, datetime_to_string,
     determine_spec_version, determine_version, generate_status,
     generate_status_details, get_application_instance_config_values,
-    remove_hidden_field, string_to_datetime
+    get_timestamp, remove_hidden_field, string_to_datetime
 )
 from ..exceptions import ProcessingError
 from ..filters.basic_filter import BasicFilter
@@ -60,6 +62,28 @@ class Status(Base):
     pending_count = Column(Integer)
     successes = Column(JSON)
     failures = Column(JSON)
+
+
+class ApiRoot(Base):
+    __tablename__ = 'api_roots'
+
+    name = Column(String, primary_key=True)
+    url = Column(String, nullable=False)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    versions = Column(JSON, nullable=False)
+    max_content_length = Column(Integer, nullable=False)
+
+
+class Discovery(Base):
+    __tablename__ = 'discovery'
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String, nullable=False)
+    description = Column(String, nullable=True)
+    contact = Column(String, nullable=True)
+    default = Column(String, nullable=True)
+    api_roots = Column(JSON, nullable=True)
 
 
 class PostgresBackend(Backend):
@@ -232,3 +256,210 @@ class PostgresBackend(Backend):
             return None
         finally:
             session.close()
+
+    def _pop_old_statuses(self):
+        session = self.session()
+        try:
+            if self.status_retention > 0:
+                boundary = get_timestamp() - timedelta(seconds=self.status_retention)
+                session.query(Status).filter(Status.request_timestamp < boundary).delete()
+                session.commit()
+        finally:
+            session.close()
+
+    def server_discovery(self):
+        session = self.session()
+        try:
+            discovery = session.query(Discovery).first()
+            if discovery:
+                return {
+                    "title": discovery.title,
+                    "description": discovery.description,
+                    "contact": discovery.contact,
+                    "default": discovery.default,
+                    "api_roots": discovery.api_roots
+                }
+            return None
+        finally:
+            session.close()
+
+    def get_api_root_information(self, api_root):
+        session = self.session()
+        try:
+            api_root_info = session.query(ApiRoot).filter_by(name=api_root).first()
+            if api_root_info:
+                return {
+                    "name": api_root_info.name,
+                    "url": api_root_info.url,
+                    "title": api_root_info.title,
+                    "description": api_root_info.description,
+                    "versions": api_root_info.versions,
+                    "max_content_length": api_root_info.max_content_length
+                }
+            return None
+        finally:
+            session.close()
+
+    def _get_api_root_statuses(self, api_root):
+        session = self.session()
+        try:
+            statuses = session.query(Status).filter_by(api_root=api_root).all()
+            return [
+                {
+                    "id": s.id,
+                    "status": s.status,
+                    "request_timestamp": datetime_to_string(s.request_timestamp),
+                    "total_count": s.total_count,
+                    "success_count": s.success_count,
+                    "failure_count": s.failure_count,
+                    "pending_count": s.pending_count,
+                    "successes": s.successes,
+                    "failures": s.failures,
+                } for s in statuses
+            ]
+        finally:
+            session.close()
+
+    def get_collection(self, api_root, collection_id):
+        session = self.session()
+        try:
+            c = session.query(Collection).filter_by(api_root_path=api_root, id=collection_id).first()
+            if c:
+                collection = c.collection_data
+                collection['id'] = c.id
+                collection.pop("manifest", None)
+                collection.pop("responses", None)
+                collection.pop("objects", None)
+                return collection
+            return None
+        finally:
+            session.close()
+
+    def get_object_manifest(self, api_root, collection_id, filter_args, allowed_filters):
+        session = self.session()
+        try:
+            manifests = session.query(Manifest).filter_by(collection_id=collection_id).all()
+            manifest_dicts = [
+                {
+                    "id": m.id,
+                    "version": m.version,
+                    "date_added": m.date_added.isoformat() + "Z",
+                    "media_type": m.media_type
+                } for m in manifests
+            ]
+            full_filter = BasicFilter(filter_args)
+            filtered_manifests, next_save, headers = full_filter.process_filter(
+                manifest_dicts,
+                allowed_filters,
+                None,
+                filter_args.get("limit")
+            )
+            return create_resource("manifest", filtered_manifests), headers
+        finally:
+            session.close()
+
+    def get_object_versions(self, api_root, collection_id, object_id, filter_args, allowed_filters):
+        session = self.session()
+        try:
+            manifests = session.query(Manifest).filter_by(collection_id=collection_id, id=object_id).all()
+            if not manifests:
+                raise ProcessingError(f"Object '{object_id}' not found", 404)
+            manifest_dicts = [
+                {
+                    "id": m.id,
+                    "version": m.version,
+                    "date_added": m.date_added.isoformat() + "Z",
+                    "media_type": m.media_type
+                } for m in manifests
+            ]
+            full_filter = BasicFilter(filter_args)
+            filtered_manifests, next_save, headers = full_filter.process_filter(
+                manifest_dicts,
+                allowed_filters,
+                None,
+                filter_args.get("limit")
+            )
+            versions = sorted([m["version"] for m in filtered_manifests], reverse=True)
+            return create_resource("versions", versions), headers
+        finally:
+            session.close()
+
+    def _update_manifest(self, new_obj, api_root, collection_id, request_time):
+        session = self.session()
+        try:
+            version = determine_version(new_obj, request_time)
+            media_type = f"application/stix+json;version={determine_spec_version(new_obj)}"
+            manifest_entry = Manifest(
+                id=new_obj["id"],
+                version=version,
+                collection_id=collection_id,
+                date_added=request_time,
+                media_type=media_type
+            )
+            session.add(manifest_entry)
+            session.commit()
+        finally:
+            session.close()
+
+    def object_manifest_check(self):
+        # This check is primarily for the memory backend, so we can pass here.
+        pass
+
+    def load_data_from_file(self, filename):
+        with open(filename, "r") as f:
+            data = json.load(f)
+        session = self.session()
+        try:
+            for api_root_name, api_root_data in data.items():
+                if api_root_name == "discovery":
+                    discovery = Discovery(
+                        title=api_root_data.get("title"),
+                        description=api_root_data.get("description"),
+                        contact=api_root_data.get("contact"),
+                        default=api_root_data.get("default"),
+                        api_roots=api_root_data.get("api_roots")
+                    )
+                    session.add(discovery)
+                else:
+                    api_root_info = api_root_data.get("information")
+                    api_root = ApiRoot(
+                        name=api_root_name,
+                        url=api_root_info.get("url"),
+                        title=api_root_info.get("title"),
+                        description=api_root_info.get("description"),
+                        versions=api_root_info.get("versions"),
+                        max_content_length=api_root_info.get("max_content_length")
+                    )
+                    session.add(api_root)
+                    for collection_data in api_root_data.get("collections", []):
+                        collection = Collection(
+                            id=collection_data["id"],
+                            api_root_path=api_root_name,
+                            collection_data=collection_data
+                        )
+                        session.add(collection)
+                        for obj in collection_data.get("objects", []):
+                            version = determine_version(obj, get_timestamp())
+                            db_obj = Object(
+                                id=obj["id"],
+                                version=version,
+                                collection_id=collection_data["id"],
+                                object=obj,
+                                date_added=get_timestamp()
+                            )
+                            session.add(db_obj)
+                            media_type = f"application/stix+json;version={determine_spec_version(obj)}"
+                            manifest_entry = Manifest(
+                                id=obj["id"],
+                                version=version,
+                                collection_id=collection_data["id"],
+                                date_added=get_timestamp(),
+                                media_type=media_type
+                            )
+                            session.add(manifest_entry)
+            session.commit()
+        finally:
+            session.close()
+
+    def _pop_expired_sessions(self):
+        pass

@@ -1,7 +1,9 @@
 import datetime
 import unittest
 
-from medallion.backends.postgres_backend import Collection, PostgresBackend
+from medallion.backends.postgres_backend import (
+    ApiRoot, Collection, Discovery, PostgresBackend
+)
 from medallion.common import APPLICATION_INSTANCE
 
 API_OBJECTS = {
@@ -42,7 +44,7 @@ class PostgresBackendTest(unittest.TestCase):
 
     def test_add_and_get_object(self):
         request_time = datetime.datetime.now(datetime.timezone.utc)
-        status = self.backend.add_objects("test_api_root", "test_collection", API_OBJECTS, request_time)
+        self.backend.add_objects("test_api_root", "test_collection", API_OBJECTS, request_time)
 
         retrieved_obj, _ = self.backend.get_object(
             "test_api_root",
@@ -67,6 +69,62 @@ class PostgresBackendTest(unittest.TestCase):
         self.assertEqual(retrieved_status["id"], status["id"])
         self.assertEqual(retrieved_status["status"], "complete")
         self.assertEqual(retrieved_status["success_count"], 1)
+
+    def test_server_discovery(self):
+        discovery = {
+            "title": "Test Discovery",
+            "description": "Test Discovery Description",
+            "contact": "test@test.com",
+            "default": "http://localhost:5000/taxii2/",
+            "api_roots": ["test_api_root"]
+        }
+        session = self.backend.session()
+        d = Discovery(**discovery)
+        session.add(d)
+        session.commit()
+        session.close()
+
+        retrieved_discovery = self.backend.server_discovery()
+        self.assertEqual(retrieved_discovery["title"], discovery["title"])
+        self.assertEqual(retrieved_discovery["api_roots"], discovery["api_roots"])
+
+    def test_get_api_root_information(self):
+        api_root_info = {
+            "name": "test_api_root",
+            "url": "http://localhost:5000/test_api_root/",
+            "title": "Test API Root",
+            "description": "Test API Root Description",
+            "versions": ["taxii-2.0"],
+            "max_content_length": 1024
+        }
+        session = self.backend.session()
+        ar = ApiRoot(**api_root_info)
+        session.add(ar)
+        session.commit()
+        session.close()
+
+        retrieved_api_root_info = self.backend.get_api_root_information("test_api_root")
+        self.assertEqual(retrieved_api_root_info["name"], api_root_info["name"])
+        self.assertEqual(retrieved_api_root_info["versions"], api_root_info["versions"])
+
+    def test_get_collection(self):
+        collection = self.backend.get_collection("test_api_root", "test_collection")
+        self.assertEqual(collection["id"], self.collection_data["id"])
+        self.assertEqual(collection["title"], self.collection_data["title"])
+
+    def test_get_object_manifest(self):
+        request_time = datetime.datetime.now(datetime.timezone.utc)
+        self.backend.add_objects("test_api_root", "test_collection", API_OBJECTS, request_time)
+        manifest, _ = self.backend.get_object_manifest("test_api_root", "test_collection", {}, ())
+        self.assertEqual(len(manifest["objects"]), 1)
+        self.assertEqual(manifest["objects"][0]["id"], API_OBJECTS["objects"][0]["id"])
+
+    def test_get_object_versions(self):
+        request_time = datetime.datetime.now(datetime.timezone.utc)
+        self.backend.add_objects("test_api_root", "test_collection", API_OBJECTS, request_time)
+        versions, _ = self.backend.get_object_versions("test_api_root", "test_collection", API_OBJECTS["objects"][0]["id"], {}, ())
+        self.assertEqual(len(versions["versions"]), 1)
+        self.assertIn("2017-01-20T00:00:00.000Z", versions["versions"][0])
 
 
 if __name__ == '__main__':
